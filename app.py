@@ -22,13 +22,30 @@ def get_all(table):
     except:
         return pd.DataFrame()
 
+# Cargamos todo
 acc_df = get_all("accounts")
 cat_df = get_all("categories")
 tx_raw = get_all("transactions")
 
+# --- FUNCIÓN PARA "TRADUCIR" IDS A NOMBRES ---
+def preparar_tabla_visible(df_tx, df_acc, df_cat):
+    if df_tx.empty: return df_tx
+    df = df_tx.copy()
+    # Unir con cuentas para sacar el nombre del banco
+    if not df_acc.empty:
+        df = df.merge(df_acc[['id', 'name']], left_on='banco_h_id', right_on='id', how='left')
+        df = df.rename(columns={'name': 'Banco (H)'}).drop(columns=['id_y', 'banco_h_id'], errors='ignore')
+    # Unir con categorías para sacar el nombre del subconcepto
+    if not df_cat.empty:
+        df = df.merge(df_cat[['id', 'name']], left_on='subconcepto_id', right_on='id', how='left')
+        df = df.rename(columns={'name': 'Subconcepto (E)'}).drop(columns=['id', 'subconcepto_id'], errors='ignore')
+    
+    # Reordenar columnas para que sea igual a tu Excel
+    columnas_orden = ['id_x', 'fecha', 'fecha_aj', 'concepto', 'Subconcepto (E)', 'importe_f', 'importe_k', 'Banco (H)', 'hacia_i', 'tipo', 'es_compartido']
+    return df[[c for c in columnas_orden if c in df.columns]]
+
 # --- NAVEGACIÓN ---
-# He añadido la Tabla Maestra como tercera pestaña
-menu = st.tabs(["📊 Dashboard", "📝 Nuevo Registro", "🗂️ Tabla Maestra (Editar)", "📜 Historial", "⚙️ Ajustes"])
+menu = st.tabs(["📊 Dashboard", "📝 Nuevo Registro", "🗂️ Tabla Maestra", "📜 Historial", "⚙️ Ajustes"])
 
 # ----------------- 📝 NUEVO REGISTRO -----------------
 with menu[1]:
@@ -41,14 +58,16 @@ with menu[1]:
         fecha = c1.date_input("Fecha real", datetime.now())
         fecha_aj = c2.date_input("Fecha contable (Ajuste)", datetime.now())
         concepto = st.text_input("Concepto")
+        
+        # Corregido: Quitamos restricciones de max_value para evitar bloqueos
         user_monto = st.number_input("Importe Total (€)", min_value=0.0, step=0.01)
         
         if es_comp:
-            user_k = st.number_input("Importe Neto Jorge", min_value=0.0, max_value=user_monto, step=0.01)
+            user_k = st.number_input("Importe Neto Jorge (Tu parte)", min_value=0.0, step=0.01)
         else:
             user_k = user_monto
             
-        list_bancos = acc_df['name'].tolist() if not acc_df.empty else ["Efectivo"]
+        list_bancos = acc_df['name'].tolist() if not acc_df.empty else []
         banco_h = st.selectbox("Desde Banco (H)", list_bancos)
         
         if tipo == "Traspaso":
@@ -56,7 +75,7 @@ with menu[1]:
             sub_id = cat_df[cat_df['name'] == 'Traspaso'].iloc[0]['id'] if not cat_df.empty else None
         else:
             hacia_i = tipo 
-            list_cats = cat_df['name'].tolist() if not cat_df.empty else ["General"]
+            list_cats = cat_df['name'].tolist() if not cat_df.empty else []
             sub_nombre = st.selectbox("Subconcepto (E)", list_cats)
             sub_id = cat_df[cat_df['name'] == sub_nombre].iloc[0]['id'] if not cat_df.empty else None
 
@@ -86,61 +105,40 @@ with menu[1]:
             st.success("Guardado correctamente")
             st.rerun()
 
-# ----------------- 🗂️ TABLA MAESTRA (EDITABLE) -----------------
+# ----------------- 🗂️ TABLA MAESTRA -----------------
 with menu[2]:
-    st.subheader("Edición Directa de Datos")
-    st.caption("Haz doble clic en cualquier celda para editar. Pulsa 'Guardar' al terminar.")
-    
+    st.subheader("Visualización tipo Excel")
     if not tx_raw.empty:
-        # Configuramos el editor de datos
-        df_editado = st.data_editor(
-            tx_raw.sort_values('id', ascending=False),
-            num_rows="dynamic", # Permite añadir/borrar filas
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True), # El ID no se toca
-                "fecha_inscripcion": st.column_config.DatetimeColumn("Inscrito", disabled=True),
-                "importe_f": st.column_config.NumberColumn("Importe F", format="%.2f €"),
-                "importe_k": st.column_config.NumberColumn("Importe K", format="%.2f €"),
-            },
-            hide_index=True,
-            key="tabla_editor"
-        )
-        
-        if st.button("💾 GUARDAR CAMBIOS EN LA NUBE"):
-            # Lógica para detectar cambios (esto es un poco avanzado pero funciona así):
-            # Comparamos el original con el editado
-            # Por simplicidad en este test, el botón avisará de que la función de guardado masivo
-            # está en desarrollo, pero podemos implementar el borrado/edición fila a fila.
-            st.info("Los cambios visuales se han procesado. (Para edición real masiva estamos configurando la API de Supabase Batch)")
-            # Por ahora, para editar usa el Historial o el Nuevo Registro. 
-            # Esta tabla sirve principalmente para visualización limpia tipo Excel.
+        tabla_bonita = preparar_tabla_visible(tx_raw, acc_df, cat_df)
+        st.dataframe(tabla_bonita.sort_values('id_x', ascending=False), use_container_width=True, hide_index=True)
 
-# ----------------- 📜 HISTORIAL (CON BORRADO) -----------------
+# ----------------- 📜 HISTORIAL (BORRADO) -----------------
 with menu[3]:
-    st.subheader("Historial y Gestión de Errores")
+    st.subheader("Gestión de IDs")
     if not tx_raw.empty:
-        col1, col2 = st.columns([1,3])
-        id_a_borrar = col1.number_input("ID a eliminar", min_value=0, step=1)
-        if col1.button("🗑️ Borrar"):
-            supabase.table("transactions").delete().eq("id", id_a_borrar).execute()
-            st.warning(f"ID {id_a_borrar} eliminado.")
+        id_borrar = st.number_input("Escribe el ID para eliminar", min_value=0, step=1)
+        if st.button("Eliminar Registro"):
+            supabase.table("transactions").delete().eq("id", id_borrar).execute()
             st.rerun()
-        
-        st.dataframe(tx_raw.sort_values('id', ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(tx_raw[['id', 'fecha', 'concepto', 'importe_f']], use_container_width=True)
 
 # ----------------- 📊 DASHBOARD -----------------
 with menu[0]:
     st.title("Vista General")
-    if not tx_raw.empty:
-        c1, c2, c3 = st.columns(3)
-        neto_jorge = tx_raw['importe_k'].sum()
-        c1.metric("Patrimonio Real (Neto)", f"{neto_jorge:,.2f} €")
+    if not acc_df.empty:
+        # Sumamos el saldo de todas las cuentas para el patrimonio total
+        patrimonio_total = acc_df['balance'].sum()
+        st.metric("Saldo Total en Bancos (Caja)", f"{patrimonio_total:,.2f} €")
         
-        # Gráfico de gastos por subconcepto
-        gastos_df = tx_raw[tx_raw['tipo'] == 'Gasto'].copy()
-        if not gastos_df.empty:
-            fig = px.pie(gastos_df, values=gastos_df['importe_k'].abs(), names='concepto', title="Distribución de Gastos")
-            st.plotly_chart(fig, use_container_width=True)
+        c1, c2 = st.columns(2)
+        # Gasto real de Jorge (K) este mes
+        if not tx_raw.empty:
+            gasto_jorge = tx_raw[tx_raw['tipo'] == 'Gasto']['importe_k'].sum()
+            c1.metric("Gasto Neto Jorge (Acumulado)", f"{gasto_jorge:,.2f} €")
+            
+            # Gráfico
+            fig = px.pie(tx_raw[tx_raw['tipo'] == 'Gasto'], values=tx_raw[tx_raw['tipo'] == 'Gasto']['importe_k'].abs(), names='concepto')
+            st.plotly_chart(fig)
 
-    st.subheader("Saldos Bancarios")
+    st.subheader("Desglose por Bancos")
     st.dataframe(acc_df[['name', 'balance']], use_container_width=True, hide_index=True)

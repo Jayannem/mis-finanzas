@@ -4,18 +4,15 @@ from supabase import create_client
 from datetime import datetime, date
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="FinanceFlow Pro v2.4", layout="wide")
+st.set_page_config(page_title="FinanceFlow Pro v2.6", layout="wide")
 st.markdown("""
     <style>
     [data-testid='stSidebar']{display:none;} 
     .main{padding:10px;}
     .bank-card-mini {
-        background-color: #ffffff;
-        border-radius: 8px;
-        padding: 8px 12px;
-        border-left: 4px solid #28a745;
-        box-shadow: 1px 1px 3px rgba(0,0,0,0.05);
-        margin-bottom: 5px;
+        background-color: #ffffff; border-radius: 6px; padding: 6px 10px;
+        border-left: 3px solid #28a745; box-shadow: 1px 1px 2px rgba(0,0,0,0.05);
+        margin-bottom: 4px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -41,6 +38,7 @@ def preparar_tabla_visible(df_tx, df_acc, df_cat):
     cols = ['id', 'fecha', 'fecha_aj', 'concepto', 'Subconcepto (E)', 'importe_f', 'importe_k', 'Banco (H)', 'hacia_i', 'tipo']
     return df[[c for c in cols if c in df.columns]]
 
+# CARGA INICIAL
 acc_df = get_all("accounts")
 cat_df = get_all("categories")
 tx_raw = get_all("transactions")
@@ -48,17 +46,14 @@ tx_raw = get_all("transactions")
 # --- NAVEGACIÓN ---
 menu = st.tabs(["📊 Dashboard", "📝 Registro", "🗂️ Tabla Maestra", "🛠️ Diagnóstico", "⚙️ Ajustes"])
 
-# ----------------- 📊 DASHBOARD (ORDEN JORGE) -----------------
+# ----------------- 📊 DASHBOARD -----------------
 with menu[0]:
-    # 1. Filtro de Fechas
+    # 1. Filtro de Fechas (Abril 2026 por defecto según tus capturas)
     today = date.today()
-    first_day_month = date(today.year, today.month, 1)
+    start_m = date(2026, 4, 1)
+    end_m = date(2026, 4, 30)
     
-    col_f1, col_f2 = st.columns([1, 4])
-    with col_f1:
-        st.write("**Filtro temporal:**")
-    with col_f2:
-        d_range = st.date_input("Rango", [first_day_month, today], label_visibility="collapsed")
+    d_range = st.date_input("Filtro temporal:", [start_m, end_m])
     
     if len(d_range) == 2:
         df_filt = tx_raw[(tx_raw['fecha_aj'] >= str(d_range[0])) & (tx_raw['fecha_aj'] <= str(d_range[1]))]
@@ -72,37 +67,37 @@ with menu[0]:
     ingresos = df_filt[df_filt['tipo'] == 'Ingreso']
     
     g_jorge = gastos['importe_k'].sum()
-    g_total_caja = gastos['importe_f'].sum()
-    g_compartido = g_total_caja - g_jorge
+    g_total_f = gastos['importe_f'].sum()
+    g_compartido = g_total_f - g_jorge
     i_totales = ingresos['importe_f'].sum()
-    liquidez_actual = acc_df['balance'].sum()
+    liquidez_total = acc_df['balance'].sum()
 
     k1.metric("Gasto Real Jorge", f"{g_jorge:,.2f} €")
     k2.metric("Compartido", f"{g_compartido:,.2f} €")
-    k3.metric("Salida Total Caja", f"{g_total_caja:,.2f} €")
+    k3.metric("Salida Total Caja", f"{g_total_f:,.2f} €")
     k4.metric("Ingresos Totales", f"{i_totales:,.2f} €")
-    k5.metric("Liquidez Real", f"{liquidez_actual:,.2f} €")
+    k5.metric("Liquidez Real", f"{liquidez_total:,.2f} €")
 
     st.write("---")
     
-    # 3. Bancos Compactos (Todos)
+    # 3. Cuentas Compactas (Todas)
     st.subheader("💳 Estado de las Cuentas")
     sorted_accs = acc_df.sort_values('name')
-    cols_b = st.columns(4)
+    cols_b = st.columns(5) # Más columnas para que sean más pequeñas
     for i, (_, row) in enumerate(sorted_accs.iterrows()):
-        with cols_b[i % 4]:
+        with cols_b[i % 5]:
             st.markdown(f"""
                 <div class="bank-card-mini">
-                    <div style="font-size: 0.75em; color: gray; text-transform: uppercase;">{row['name']}</div>
-                    <div style="font-size: 1.1em; font-weight: bold;">{row['balance']:,.2f} €</div>
+                    <div style="font-size: 0.7em; color: gray; text-transform: uppercase;">{row['name']}</div>
+                    <div style="font-size: 1.0em; font-weight: bold;">{row['balance']:,.2f} €</div>
                 </div>
             """, unsafe_allow_html=True)
 
 # ----------------- 📝 REGISTRO -----------------
 with menu[1]:
     tipo = st.radio("Acción", ["Gasto", "Ingreso", "Traspaso"], horizontal=True)
-    es_comp = st.checkbox("¿Compartido?")
-    with st.form("form_v24"):
+    es_comp = st.checkbox("¿Es compartido?")
+    with st.form("form_v26"):
         c1, c2 = st.columns(2)
         f_r = c1.date_input("Fecha Real", datetime.now())
         f_a = c2.date_input("Fecha Ajuste", datetime.now())
@@ -127,7 +122,7 @@ with menu[1]:
             h_id = acc_df[acc_df['name'] == b_h].iloc[0]['id']
             supabase.table("transactions").insert({"fecha": str(f_r), "fecha_aj": str(f_a), "concepto": concepto, "subconcepto_id": sub_id, "importe_f": f_f, "importe_k": k_f, "banco_h_id": h_id, "hacia_i": b_i, "tipo": tipo, "es_compartido": es_comp}).execute()
             
-            # Update directo para evitar desincronía
+            # Update Saldo Banco H
             old_h = float(acc_df.loc[acc_df['name'] == b_h, 'balance'].values[0])
             supabase.table("accounts").update({"balance": old_h + f_f}).eq("id", h_id).execute()
             if tipo == "Traspaso":
@@ -136,17 +131,15 @@ with menu[1]:
                 supabase.table("accounts").update({"balance": old_i + abs(monto)}).eq("id", i_id).execute()
             st.rerun()
 
-# ----------------- 🗂️ TABLA MAESTRA (BORRADO INTEGRADO) -----------------
+# ----------------- 🗂️ TABLA MAESTRA (BORRADO) -----------------
 with menu[2]:
     if not tx_raw.empty:
-        ids_del = st.multiselect("Eliminar registros (Recalibra automáticamente):", tx_raw['id'].sort_values(ascending=False).tolist())
-        if st.button("🗑️ EJECUTAR BORRADO"):
+        ids_del = st.multiselect("Seleccionar IDs para borrar:", tx_raw['id'].sort_values(ascending=False).tolist())
+        if st.button("🗑️ BORRAR Y RECALIBRAR"):
             for id_del in ids_del:
                 row = tx_raw[tx_raw['id'] == id_del].iloc[0]
-                # Revertir H
                 cur_h = float(get_all("accounts").loc[acc_df['id'] == row['banco_h_id'], 'balance'].values[0])
                 supabase.table("accounts").update({"balance": cur_h - float(row['importe_f'])}).eq("id", row['banco_h_id']).execute()
-                # Revertir I si era Traspaso
                 if row['tipo'] == 'Traspaso':
                     i_id = acc_df[acc_df['name'] == row['hacia_i']]['id'].values[0]
                     cur_i = float(get_all("accounts").loc[acc_df['id'] == i_id, 'balance'].values[0])
@@ -155,23 +148,21 @@ with menu[2]:
             st.rerun()
         st.dataframe(preparar_tabla_visible(tx_raw, acc_df, cat_df).sort_values('id', ascending=False), use_container_width=True, hide_index=True)
 
-# ----------------- ⚙️ AJUSTES (HERRAMIENTA DE REPARACIÓN) -----------------
+# ----------------- ⚙️ AJUSTES (LIMPIEZA DE ERRORES) -----------------
 with menu[4]:
-    st.header("Herramientas de Mantenimiento")
-    if st.button("🔄 SINCRONIZAR SALDOS (Arreglar descuadres)"):
-        # 1. Poner todo a 0
-        for _, b in acc_df.iterrows():
-            supabase.table("accounts").update({"balance": 0}).eq("id", b['id']).execute()
-        # 2. Recalcular desde transacciones
-        tx_all = get_all("transactions")
-        for _, t in tx_all.iterrows():
-            # Afectar origen
-            h_bal = float(get_all("accounts").loc[acc_df['id'] == t['banco_h_id'], 'balance'].values[0])
-            supabase.table("accounts").update({"balance": h_bal + float(t['importe_f'])}).eq("id", t['banco_h_id']).execute()
-            # Afectar destino si es traspaso
+    st.header("Mantenimiento")
+    if st.button("🔄 RECONSTRUIR TODO (Fix BBVA y Liquidez)"):
+        # 1. Resetear localmente
+        saldos_fix = {row['id']: 0.0 for _, row in acc_df.iterrows()}
+        # 2. Calcular basándose en historial
+        for _, t in tx_raw.iterrows():
+            f = float(t['importe_f'])
+            saldos_fix[t['banco_h_id']] += f
             if t['tipo'] == 'Traspaso':
-                i_id = acc_df[acc_df['name'] == t['hacia_i']]['id'].values[0]
-                i_bal = float(get_all("accounts").loc[acc_df['id'] == i_id, 'balance'].values[0])
-                supabase.table("accounts").update({"balance": i_bal + abs(float(t['importe_f']))}).eq("id", i_id).execute()
-        st.success("Saldos sincronizados con el historial. BBVA y otros deberían estar correctos ahora.")
+                target_id = acc_df[acc_df['name'] == t['hacia_i']]['id'].values[0]
+                saldos_fix[target_id] += abs(f)
+        # 3. Aplicar a Supabase
+        for b_id, val in saldos_fix.items():
+            supabase.table("accounts").update({"balance": val}).eq("id", b_id).execute()
+        st.success("Saldos reconstruidos con éxito.")
         st.rerun()

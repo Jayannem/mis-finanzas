@@ -4,7 +4,7 @@ from supabase import create_client
 from datetime import datetime, date
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="FinanceFlow Pro v2.7", layout="wide")
+st.set_page_config(page_title="FinanceFlow Pro v2.8", layout="wide")
 st.markdown("""
     <style>
     [data-testid='stSidebar']{display:none;} 
@@ -46,18 +46,18 @@ tx_raw = get_all("transactions")
 # --- NAVEGACIÓN ---
 menu = st.tabs(["📊 Dashboard", "📝 Registro", "🗂️ Tabla Maestra", "🛠️ Diagnóstico", "⚙️ Ajustes"])
 
-# ----------------- 📊 DASHBOARD -----------------
+# ----------------- 📊 DASHBOARD (FILTRO POR FECHA REAL) -----------------
 with menu[0]:
-    # 1. Filtro de Fechas (Abril 2026 por defecto)
+    # 1. Filtro de Fechas (Basado en la columna 'fecha')
     start_m = date(2026, 4, 1)
     end_m = date(2026, 4, 30)
     
-    d_range = st.date_input("Filtro temporal (basado en Fecha Ajuste):", [start_m, end_m])
+    d_range = st.date_input("Filtrar periodo (basado en Fecha Real):", [start_m, end_m])
     
     if len(d_range) == 2 and not tx_raw.empty:
-        # Convertimos la columna de la DB a formato fecha para comparar bien
-        tx_raw['fecha_aj_dt'] = pd.to_datetime(tx_raw['fecha_aj']).dt.date
-        df_filt = tx_raw[(tx_raw['fecha_aj_dt'] >= d_range[0]) & (tx_raw['fecha_aj_dt'] <= d_range[1])]
+        # Convertimos la columna 'fecha' a formato date de Python para comparar
+        tx_raw['fecha_dt'] = pd.to_datetime(tx_raw['fecha']).dt.date
+        df_filt = tx_raw[(tx_raw['fecha_dt'] >= d_range[0]) & (tx_raw['fecha_dt'] <= d_range[1])]
     else:
         df_filt = tx_raw
 
@@ -72,19 +72,19 @@ with menu[0]:
     g_compartido = g_total_f - g_jorge
     i_totales = ingresos['importe_f'].sum() if not ingresos.empty else 0
     
-    # LA LIQUIDEZ REAL NO SE FILTRA (Es el saldo actual de los bancos)
-    liquidez_actual = acc_df['balance'].sum() if not acc_df.empty else 0
+    # Liquidez Real es la suma de los balances actuales (Dato vivo)
+    liq_actual = acc_df['balance'].sum() if not acc_df.empty else 0
 
     k1.metric("Gasto Real Jorge", f"{g_jorge:,.2f} €")
     k2.metric("Compartido", f"{g_compartido:,.2f} €")
     k3.metric("Salida Total Caja", f"{g_total_f:,.2f} €")
     k4.metric("Ingresos Totales", f"{i_totales:,.2f} €")
-    k5.metric("Liquidez Real", f"{liquidez_actual:,.2f} €")
+    k5.metric("Liquidez Real", f"{liq_actual:,.2f} €")
 
     st.write("---")
     
     # 3. Cuentas Compactas (Todas)
-    st.subheader("💳 Estado Actual de las Cuentas")
+    st.subheader("💳 Estado de las Cuentas")
     sorted_accs = acc_df.sort_values('name')
     cols_b = st.columns(5)
     for i, (_, row) in enumerate(sorted_accs.iterrows()):
@@ -100,9 +100,9 @@ with menu[0]:
 with menu[1]:
     tipo = st.radio("Acción", ["Gasto", "Ingreso", "Traspaso"], horizontal=True)
     es_comp = st.checkbox("¿Es compartido?")
-    with st.form("form_v27"):
+    with st.form("form_v28"):
         c1, c2 = st.columns(2)
-        f_r = c1.date_input("Fecha Real", date.today())
+        f_r = c1.date_input("Fecha Real (B)", date.today())
         f_a = c2.date_input("Fecha Ajuste", date.today())
         concepto = st.text_input("Concepto")
         monto = st.number_input("Importe Total (F)", min_value=0.0, step=0.01)
@@ -117,7 +117,7 @@ with menu[1]:
             sub_n = st.selectbox("Subconcepto (E)", sorted(cat_df['name'].tolist()))
             sub_id = cat_df[cat_df['name'] == sub_n].iloc[0]['id']
 
-        if st.form_submit_button("GUARDAR"):
+        if st.form_submit_button("GUARDAR REGISTRO"):
             f_f = -abs(monto) if tipo in ["Gasto", "Traspaso"] else abs(monto)
             k_f = -abs(k_monto) if tipo in ["Gasto", "Traspaso"] else abs(k_monto)
             if not es_comp: k_f = f_f
@@ -134,29 +134,37 @@ with menu[1]:
                 supabase.table("accounts").update({"balance": old_i + abs(monto)}).eq("id", i_id).execute()
             st.rerun()
 
-# ----------------- 🗂️ TABLA MAESTRA -----------------
+# ----------------- 🗂️ TABLA MAESTRA (EDITAR/BORRAR) -----------------
 with menu[2]:
     if not tx_raw.empty:
+        ids_del = st.multiselect("Eliminar registros:", tx_raw['id'].sort_values(ascending=False).tolist())
+        if st.button("🗑️ BORRAR SELECCIONADOS"):
+            for id_del in ids_del:
+                row = tx_raw[tx_raw['id'] == id_del].iloc[0]
+                cur_h = float(get_all("accounts").loc[acc_df['id'] == row['banco_h_id'], 'balance'].values[0])
+                supabase.table("accounts").update({"balance": cur_h - float(row['importe_f'])}).eq("id", row['banco_h_id']).execute()
+                if row['tipo'] == 'Traspaso':
+                    i_id = acc_df[acc_df['name'] == row['hacia_i']]['id'].values[0]
+                    cur_i = float(get_all("accounts").loc[acc_df['id'] == i_id, 'balance'].values[0])
+                    supabase.table("accounts").update({"balance": cur_i - abs(float(row['importe_f']))}).eq("id", i_id).execute()
+                supabase.table("transactions").delete().eq("id", id_del).execute()
+            st.rerun()
         st.dataframe(preparar_tabla_visible(tx_raw, acc_df, cat_df).sort_values('id', ascending=False), use_container_width=True, hide_index=True)
 
 # ----------------- ⚙️ AJUSTES (SYNC FIX) -----------------
 with menu[4]:
-    st.header("Mantenimiento")
-    if st.button("🔄 RECONSTRUIR TODO (Sincronizar saldos)"):
-        # Reset local
+    st.header("Herramientas")
+    if st.button("🔄 RECONSTRUIR SALDOS (Basado en historial)"):
         s_fix = {row['id']: 0.0 for _, row in acc_df.iterrows()}
-        # Recalcular
         for _, t in tx_raw.iterrows():
             f = float(t['importe_f'])
             s_fix[t['banco_h_id']] += f
             if t['tipo'] == 'Traspaso':
-                # Buscar ID del banco destino por nombre
                 try:
                     tid = acc_df[acc_df['name'] == t['hacia_i']]['id'].values[0]
                     s_fix[tid] += abs(f)
                 except: pass
-        # Subir
         for bid, val in s_fix.items():
             supabase.table("accounts").update({"balance": val}).eq("id", bid).execute()
-        st.success("Saldos sincronizados.")
+        st.success("Saldos sincronizados. BBVA debería ser ahora 350€.")
         st.rerun()

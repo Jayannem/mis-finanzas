@@ -5,8 +5,8 @@ import plotly.express as px
 from supabase import create_client
 from datetime import datetime, date
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="FinanceFlow Pro v3.7", layout="wide")
+# --- CONFIGURACIÓN ESTÉTICA ---
+st.set_page_config(page_title="FinanceFlow Pro v3.8", layout="wide")
 
 st.markdown("""
     <style>
@@ -23,12 +23,12 @@ st.markdown("""
     .metric-value { color: #1A202C; font-size: 26px; font-weight: 800; margin-top: 5px; }
     .premium-bank-card {
         background: white; border-radius: 12px; padding: 15px;
-        border-bottom: 3px solid #3B4CCA; box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+        border-left: 4px solid #3B4CCA; box-shadow: 0 2px 8px rgba(0,0,0,0.03);
         margin-bottom: 10px; text-align: center;
     }
-    .bank-title { font-size: 12px; color: #4A5568; font-weight: 600; text-transform: uppercase; }
-    .bank-amount { font-size: 20px; color: #1A202C; font-weight: 700; }
-    .section-title { font-size: 20px; font-weight: 700; color: #2D3748; margin: 20px 0 10px 0; }
+    .bank-title { font-size: 11px; color: #4A5568; font-weight: 600; text-transform: uppercase; }
+    .bank-amount { font-size: 18px; color: #1A202C; font-weight: 700; }
+    .section-title { font-size: 20px; font-weight: 700; color: #2D3748; margin: 25px 0 15px 0; border-bottom: 2px solid #EEE; padding-bottom: 5px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -42,25 +42,21 @@ def get_all(table):
     res = supabase.table(table).select("*").execute()
     return pd.DataFrame(res.data)
 
-# --- CARGA Y RECALCULO DE LIQUIDEZ EN TIEMPO REAL ---
+# --- CARGA Y RECALCULO DE LIQUIDEZ ---
 acc_df_raw = get_all("accounts")
 cat_df = get_all("categories")
 tx_raw = get_all("transactions")
 
-# Lógica para que la liquidez siempre sea real sumando transacciones
 def calcular_saldos_reales(df_acc, df_tx):
+    if df_acc.empty: return df_acc
     saldos = {row['id']: 0.0 for _, row in df_acc.iterrows()}
     name_to_id = {row['name']: row['id'] for _, row in df_acc.iterrows()}
-    
     for _, t in df_tx.iterrows():
-        # Afectar origen (H)
         if t['banco_h_id'] in saldos:
             saldos[t['banco_h_id']] += float(t['importe_f'])
-        # Afectar destino (I) si es traspaso
         if t['tipo'] == 'Traspaso' and t['hacia_i'] in name_to_id:
             dest_id = name_to_id[t['hacia_i']]
             saldos[dest_id] += abs(float(t['importe_f']))
-            
     df_acc['balance'] = df_acc['id'].map(saldos)
     return df_acc
 
@@ -86,7 +82,6 @@ with menu[0]:
     # 2. KPIs
     gastos = df_filt[df_filt['tipo'] == 'Gasto'] if not df_filt.empty else pd.DataFrame()
     ingresos = df_filt[df_filt['tipo'] == 'Ingreso'] if not df_filt.empty else pd.DataFrame()
-    
     g_j = gastos['importe_k'].sum() if not gastos.empty else 0
     g_f = gastos['importe_f'].sum() if not gastos.empty else 0
     i_t = ingresos['importe_f'].sum() if not ingresos.empty else 0
@@ -94,56 +89,54 @@ with menu[0]:
     liq_total = acc_df['balance'].sum()
 
     k1, k2, k3, k4, k5 = st.columns(5)
-    with k1: st.markdown(f'<div class="metric-card"><div class="metric-label">Gasto Jorge (K)</div><div class="metric-value">{g_j:,.0f}€</div></div>', unsafe_allow_html=True)
+    with k1: st.markdown(f'<div class="metric-card"><div class="metric-label">Jorge K</div><div class="metric-value">{g_j:,.0f}€</div></div>', unsafe_allow_html=True)
     with k2: st.markdown(f'<div class="metric-card"><div class="metric-label">Compartido</div><div class="metric-value">{comp:,.0f}€</div></div>', unsafe_allow_html=True)
     with k3: st.markdown(f'<div class="metric-card"><div class="metric-label">Salida Caja (F)</div><div class="metric-value">{g_f:,.0f}€</div></div>', unsafe_allow_html=True)
     with k4: st.markdown(f'<div class="metric-card"><div class="metric-label">Ingresos</div><div class="metric-value" style="color:#10B981;">{i_t:,.0f}€</div></div>', unsafe_allow_html=True)
     with k5: st.markdown(f'<div class="metric-card" style="background:#3B4CCA;"><div class="metric-label" style="color:white; opacity:0.8;">Liquidez Real</div><div class="metric-value" style="color:white;">{liq_total:,.0f}€</div></div>', unsafe_allow_html=True)
 
-    # 3. GRÁFICO CASCADA (INGRESOS IZQ -> GASTOS -> AHORRO)
+    # 3. GRÁFICO CASCADA (DETALLADO)
     st.markdown("<div class='section-title'>Flujo de Caja Detallado (Jorge K)</div>", unsafe_allow_html=True)
     if not df_filt.empty:
         map_cat = dict(zip(cat_df['id'], cat_df['name']))
         df_filt['cat_name'] = df_filt['subconcepto_id'].map(map_cat)
-        
-        # Separar ingresos y gastos por categoría para trazabilidad
         df_filt['label'] = df_filt.apply(lambda x: f"{x['cat_name']} (+)" if x['importe_k'] > 0 else f"{x['cat_name']} (-)", axis=1)
         resumen = df_filt[df_filt['tipo'] != 'Traspaso'].groupby('label')['importe_k'].sum()
         
-        # Ordenar: Positivos primero (Ingresos), luego negativos (Gastos)
         pos = resumen[resumen >= 0].sort_values(ascending=False)
         neg = resumen[resumen < 0].sort_values(ascending=False)
         final_res = pd.concat([pos, neg])
         
         fig_w = go.Figure(go.Waterfall(
-            orientation = "v",
-            measure = ["relative"] * len(final_res) + ["total"],
-            x = list(final_res.index) + ["RESULTADO NETO"],
+            orientation = "v", measure = ["relative"] * len(final_res) + ["total"],
+            x = list(final_res.index) + ["AHORRO NETO"],
             y = list(final_res.values) + [0],
             textposition = "outside",
             text = [f"{v:,.0f}€" for v in final_res.values] + [f"{final_res.sum():,.0f}€"],
-            increasing = {"marker":{"color":"#10B981"}},
-            decreasing = {"marker":{"color":"#EF4444"}},
+            increasing = {"marker":{"color":"#10B981"}}, decreasing = {"marker":{"color":"#EF4444"}},
             totals = {"marker":{"color":"#3B4CCA"}}
         ))
-        fig_w.update_layout(height=450, margin=dict(l=0,r=0,t=20,b=0))
+        fig_w.update_layout(height=400, margin=dict(l=0,r=0,t=20,b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
         st.plotly_chart(fig_w, use_container_width=True)
 
-    # 4. PATRIMONIO Y MONEY SITES
-    st.markdown("<div class='section-title'>Composición del Patrimonio</div>", unsafe_allow_html=True)
-    c_donut, c_cards = st.columns([1, 2])
+    # 4. PATRIMONIO Y MONEY SITES (RANKING ÚTIL)
+    st.markdown("<div class='section-title'>Balance de Cuentas y Liquidez</div>", unsafe_allow_html=True)
+    c_chart, c_cards = st.columns([1.2, 2])
     
-    with c_donut:
-        acc_with_money = acc_df[acc_df['balance'] != 0]
-        if not acc_with_money.empty:
-            fig_p = px.pie(acc_with_money, values='balance', names='name', hole=0.7, 
-                           color_discrete_sequence=px.colors.qualitative.Prism)
-            fig_p.update_layout(showlegend=True, height=350, margin=dict(l=0,r=0,t=0,b=0), legend=dict(orientation="h", y=-0.1))
-            st.plotly_chart(fig_p, use_container_width=True)
-        else: st.info("No hay saldos activos.")
+    with c_chart:
+        # Gráfico de barras horizontales (Ranking)
+        df_rank = acc_df[acc_df['balance'] != 0].sort_values('balance', ascending=True)
+        if not df_rank.empty:
+            fig_rank = px.bar(df_rank, x='balance', y='name', orientation='h',
+                              color='balance', color_continuous_scale=['#EF4444', '#10B981'],
+                              text_auto='.0f')
+            fig_rank.update_layout(showlegend=False, coloraxis_showscale=False, height=350, 
+                                   margin=dict(l=0,r=20,t=0,b=0), xaxis_title="Euros (€)", yaxis_title=None)
+            st.plotly_chart(fig_rank, use_container_width=True)
+        else: st.info("Sin saldos para graficar.")
 
     with c_cards:
-        hide_zero = st.toggle("Ocultar cuentas vacías", value=False)
+        hide_zero = st.toggle("Ocultar cuentas a 0€", value=False)
         disp_accs = acc_df if not hide_zero else acc_df[acc_df['balance'] != 0]
         cols_b = st.columns(3)
         for i, (_, row) in enumerate(disp_accs.sort_values('balance', ascending=False).iterrows()):
@@ -158,8 +151,8 @@ with menu[0]:
 # ----------------- REGISTRO Y TABLA (ESTABLES) -----------------
 with menu[1]:
     tipo = st.radio("Acción", ["Gasto", "Ingreso", "Traspaso"], horizontal=True)
-    es_comp = st.checkbox("¿Gasto compartido?")
-    with st.form("form_v37"):
+    es_comp = st.checkbox("¿Es compartido?")
+    with st.form("form_v38"):
         c1, c2 = st.columns(2)
         f_r = c1.date_input("Fecha Real", date.today())
         concepto = st.text_input("Concepto")
@@ -173,7 +166,7 @@ with menu[1]:
             b_i = tipo
             sub_n = st.selectbox("Categoría", sorted(cat_df['name'].tolist()))
             sub_id = cat_df[cat_df['name'] == sub_n].iloc[0]['id']
-        if st.form_submit_button("GUARDAR"):
+        if st.form_submit_button("GUARDAR REGISTRO"):
             f_f = -abs(monto) if tipo in ["Gasto", "Traspaso"] else abs(monto)
             k_f = -abs(k_monto) if tipo in ["Gasto", "Traspaso"] else abs(k_monto)
             if not es_comp: k_f = f_f
@@ -185,7 +178,7 @@ with menu[2]:
         st.dataframe(tx_raw.sort_values('id', ascending=False), use_container_width=True)
 
 with menu[3]:
-    st.write("La liquidez ahora se calcula automáticamente al cargar la app.")
-    if st.button("Limpiar Caché de la App"):
+    st.info("La liquidez se calcula automáticamente sumando tu historial.")
+    if st.button("Limpiar Caché"):
         st.cache_resource.clear()
         st.rerun()

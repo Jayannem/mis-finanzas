@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 from supabase import create_client
 from datetime import datetime, date
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="FinanceFlow Pro v3.4", layout="wide")
+st.set_page_config(page_title="FinanceFlow Pro v3.5", layout="wide")
 
-# Estilo Stitch sutil
 st.markdown("""
     <style>
     [data-testid='stSidebar']{display:none;} 
@@ -45,12 +44,11 @@ def preparar_tabla_visible(df_tx, df_acc, df_cat):
     df = df_tx.copy()
     map_acc = dict(zip(df_acc['id'], df_acc['name'])) if not df_acc.empty else {}
     map_cat = dict(zip(df_cat['id'], df_cat['name'])) if not df_cat.empty else {}
-    df['Banco (H)'] = df['banco_h_id'].map(map_acc)
     df['Subconcepto (E)'] = df['subconcepto_id'].map(map_cat)
+    df['Banco (H)'] = df['banco_h_id'].map(map_acc)
     cols = ['id', 'fecha', 'fecha_aj', 'concepto', 'Subconcepto (E)', 'importe_f', 'importe_k', 'Banco (H)', 'hacia_i', 'tipo']
     return df[[c for c in cols if c in df.columns]]
 
-# CARGA INICIAL
 acc_df = get_all("accounts")
 cat_df = get_all("categories")
 tx_raw = get_all("transactions")
@@ -58,12 +56,14 @@ tx_raw = get_all("transactions")
 # --- NAVEGACIÓN ---
 menu = st.tabs(["📊 Dashboard", "📝 Registro", "🗂️ Tabla Maestra", "⚙️ Ajustes"])
 
-# ----------------- 📊 DASHBOARD -----------------
+# ----------------- 📊 DASHBOARD (CON GRÁFICO CASCADA) -----------------
 with menu[0]:
-    # 1. Filtro Temporal (Current Month por defecto)
+    # 1. Filtro Temporal Inteligente (Mes Actual por defecto)
     today = date.today()
-    start_m = date(today.year, today.month, 1)
-    d_range = st.date_input("Periodo (Mes Actual)", [start_m, today])
+    start_of_month = today.replace(day=1)
+    
+    st.markdown("### 📅 Periodo de Análisis")
+    d_range = st.date_input("Rango de fechas", [start_of_month, today])
     
     if len(d_range) == 2 and not tx_raw.empty:
         tx_raw['fecha_dt'] = pd.to_datetime(tx_raw['fecha']).dt.date
@@ -71,7 +71,7 @@ with menu[0]:
     else:
         df_filt = tx_raw.copy()
 
-    # 2. KPIs (Tu orden exacto)
+    # 2. Cálculos KPIs
     gastos = df_filt[df_filt['tipo'] == 'Gasto'] if not df_filt.empty else pd.DataFrame()
     ingresos = df_filt[df_filt['tipo'] == 'Ingreso'] if not df_filt.empty else pd.DataFrame()
     
@@ -82,52 +82,66 @@ with menu[0]:
     liq_real = acc_df['balance'].sum() if not acc_df.empty else 0
 
     k1, k2, k3, k4, k5 = st.columns(5)
-    with k1: st.markdown(f'<div class="metric-card"><div class="metric-label">Gasto Jorge</div><div class="metric-value">{g_j:,.0f}€</div></div>', unsafe_allow_html=True)
+    with k1: st.markdown(f'<div class="metric-card"><div class="metric-label">Gasto Jorge (K)</div><div class="metric-value">{g_j:,.0f}€</div></div>', unsafe_allow_html=True)
     with k2: st.markdown(f'<div class="metric-card"><div class="metric-label">Compartido</div><div class="metric-value">{comp:,.0f}€</div></div>', unsafe_allow_html=True)
-    with k3: st.markdown(f'<div class="metric-card"><div class="metric-label">Salida Caja</div><div class="metric-value">{g_f:,.0f}€</div></div>', unsafe_allow_html=True)
+    with k3: st.markdown(f'<div class="metric-card"><div class="metric-label">Salida Caja (F)</div><div class="metric-value">{g_f:,.0f}€</div></div>', unsafe_allow_html=True)
     with k4: st.markdown(f'<div class="metric-card"><div class="metric-label">Ingresos</div><div class="metric-value" style="color:#10B981;">{i_t:,.0f}€</div></div>', unsafe_allow_html=True)
     with k5: st.markdown(f'<div class="metric-card" style="background:#3B4CCA;"><div class="metric-label" style="color:white; opacity:0.8;">Liquidez Real</div><div class="metric-value" style="color:white;">{liq_real:,.0f}€</div></div>', unsafe_allow_html=True)
 
     st.write("---")
 
-    # 3. Gráficos Comparativos
-    cg, ci = st.columns(2)
-    with cg:
-        st.markdown("#### 💸 Gastos Jorge K por Categoría")
-        if not gastos.empty:
-            df_g_plot = gastos.merge(cat_df, left_on='subconcepto_id', right_on='id')
-            res_g = df_g_plot.groupby('name')['importe_k'].sum().abs().reset_index()
-            fig_g = px.bar(res_g, x='name', y='importe_k', color_discrete_sequence=['#EF4444'])
-            fig_g.update_layout(height=250, margin=dict(l=0,r=0,t=0,b=0), xaxis_title=None, yaxis_title=None)
-            st.plotly_chart(fig_g, use_container_width=True)
+    # 3. GRÁFICO DE CASCADA (WATERFALL)
+    st.markdown("#### 📉 Flujo de Caja y Ahorro (Jorge K)")
+    if not df_filt.empty:
+        # Traducir categorías para el gráfico
+        map_cat = dict(zip(cat_df['id'], cat_df['name']))
+        df_filt['cat_name'] = df_filt['subconcepto_id'].map(map_cat)
+        
+        # Agrupar ingresos y gastos Jorge
+        inc_data = df_filt[df_filt['tipo'] == 'Ingreso'].groupby('cat_name')['importe_f'].sum()
+        exp_data = df_filt[df_filt['tipo'] == 'Gasto'].groupby('cat_name')['importe_k'].sum()
+        
+        # Preparar listas para Plotly
+        labels = list(inc_data.index) + list(exp_data.index) + ["AHORRO NETO"]
+        values = list(inc_data.values) + list(exp_data.values) + [0] # 0 es placeholder para el total
+        measures = ["relative"] * (len(inc_data) + len(exp_data)) + ["total"]
+        
+        fig = go.Figure(go.Waterfall(
+            name = "Flujo", orientation = "v",
+            measure = measures,
+            x = labels,
+            textposition = "outside",
+            text = [f"{v:,.0f}€" for v in values[:-1]] + [f"{i_t + g_j:,.0f}€"],
+            y = values,
+            connector = {"line":{"color":"rgb(63, 63, 63)"}},
+            increasing = {"marker":{"color":"#10B981"}}, # Verde
+            decreasing = {"marker":{"color":"#EF4444"}}, # Rojo
+            totals = {"marker":{"color":"#3B4CCA"}}     # Azul
+        ))
 
-    with ci:
-        st.markdown("#### 💰 Ingresos por Categoría")
-        if not ingresos.empty:
-            df_i_plot = ingresos.merge(cat_df, left_on='subconcepto_id', right_on='id')
-            res_i = df_i_plot.groupby('name')['importe_f'].sum().reset_index()
-            fig_i = px.bar(res_i, x='name', y='importe_f', color_discrete_sequence=['#10B981'])
-            fig_i.update_layout(height=250, margin=dict(l=0,r=0,t=0,b=0), xaxis_title=None, yaxis_title=None)
-            st.plotly_chart(fig_i, use_container_width=True)
+        fig.update_layout(height=400, margin=dict(l=10,r=10,t=20,b=10), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No hay datos en este periodo.")
 
     st.write("---")
 
-    # 4. Tarjetas de Bancos
-    st.markdown("#### 💳 Liquidez por Cuenta")
+    # 4. TARJETAS DE BANCOS COMPACTAS
+    st.markdown("#### 💳 Liquidez Actual")
     c_accs = st.columns(6)
     with c_accs[0]:
-        st.markdown(f'<div class="total-card-sm"><div style="font-size:10px; opacity:0.8;">TOTAL</div><div style="font-size:14px; font-weight:700;">{liq_real:,.0f}€</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="total-card-sm"><div style="font-size:10px; opacity:0.8;">PATRIMONIO</div><div style="font-size:14px; font-weight:700;">{liq_real:,.0f}€</div></div>', unsafe_allow_html=True)
     
     sorted_accs = acc_df.sort_values('name')
     for i, (_, row) in enumerate(sorted_accs.iterrows()):
         with c_accs[(i + 1) % 6]:
             st.markdown(f'<div class="bank-card-sm"><div style="font-size:10px; opacity:0.8;">{row["name"]}</div><div style="font-size:14px; font-weight:700;">{row["balance"]:,.0f}€</div></div>', unsafe_allow_html=True)
 
-# ----------------- 📝 REGISTRO -----------------
+# ----------------- REGISTRO, TABLA Y AJUSTES (ESTABLES) -----------------
 with menu[1]:
     tipo = st.radio("Acción", ["Gasto", "Ingreso", "Traspaso"], horizontal=True)
     es_comp = st.checkbox("¿Es compartido?")
-    with st.form("form_v34"):
+    with st.form("form_v35"):
         c1, c2 = st.columns(2)
         f_r = c1.date_input("Fecha Real", date.today())
         concepto = st.text_input("Concepto")
@@ -142,7 +156,7 @@ with menu[1]:
             sub_n = st.selectbox("Subconcepto", sorted(cat_df['name'].tolist()))
             sub_id = cat_df[cat_df['name'] == sub_n].iloc[0]['id']
 
-        if st.form_submit_button("GUARDAR REGISTRO"):
+        if st.form_submit_button("GUARDAR"):
             f_f = -abs(monto) if tipo in ["Gasto", "Traspaso"] else abs(monto)
             k_f = -abs(k_monto) if tipo in ["Gasto", "Traspaso"] else abs(k_monto)
             if not es_comp: k_f = f_f
@@ -150,14 +164,13 @@ with menu[1]:
             supabase.table("transactions").insert({"fecha": str(f_r), "fecha_aj": str(f_r), "concepto": concepto, "subconcepto_id": sub_id, "importe_f": f_f, "importe_k": k_f, "banco_h_id": h_id, "hacia_i": b_i, "tipo": tipo, "es_compartido": es_comp}).execute()
             st.rerun()
 
-# ----------------- 🗂️ TABLA MAESTRA (BORRADO RESTAURADO) -----------------
 with menu[2]:
     if not tx_raw.empty:
-        ids_del = st.multiselect("Seleccionar IDs para borrar y recalibrar:", tx_raw['id'].sort_values(ascending=False).tolist())
-        if st.button("🗑️ EJECUTAR BORRADO SELECCIONADOS"):
+        df_vis = preparar_tabla_visible(tx_raw, acc_df, cat_df)
+        ids_del = st.multiselect("Borrado y Recalibración múltiple:", df_vis['id'].tolist())
+        if st.button("🗑️ EJECUTAR"):
             for id_del in ids_del:
                 row = tx_raw[tx_raw['id'] == id_del].iloc[0]
-                # Lógica de recalibración revertida
                 cur_h = float(get_all("accounts").loc[acc_df['id'] == row['banco_h_id'], 'balance'].values[0])
                 supabase.table("accounts").update({"balance": cur_h - float(row['importe_f'])}).eq("id", row['banco_h_id']).execute()
                 if row['tipo'] == 'Traspaso':
@@ -166,11 +179,10 @@ with menu[2]:
                     supabase.table("accounts").update({"balance": cur_i - abs(float(row['importe_f']))}).eq("id", i_id).execute()
                 supabase.table("transactions").delete().eq("id", id_del).execute()
             st.rerun()
-        st.dataframe(preparar_tabla_visible(tx_raw, acc_df, cat_df).sort_values('id', ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(df_vis.sort_values('id', ascending=False), use_container_width=True, hide_index=True)
 
-# ----------------- ⚙️ AJUSTES -----------------
 with menu[3]:
-    if st.button("🔄 SINCRONIZAR SALDOS (Fix BBVA/Liquidez)"):
+    if st.button("🔄 SINCRONIZAR SALDOS"):
         s_fix = {row['id']: 0.0 for _, row in acc_df.iterrows()}
         for _, t in tx_raw.iterrows():
             s_fix[t['banco_h_id']] += float(t['importe_f'])
@@ -179,5 +191,4 @@ with menu[3]:
                 s_fix[tid] += abs(float(t['importe_f']))
         for bid, val in s_fix.items():
             supabase.table("accounts").update({"balance": val}).eq("id", bid).execute()
-        st.success("Sincronización completada.")
         st.rerun()
